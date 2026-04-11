@@ -1,0 +1,21 @@
+services:
+  postgres:
+    image: postgres:18-alpine
+    container_name: reminders-pg
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: reminders
+      POSTGRES_PASSWORD: reminders
+      POSTGRES_DB: reminders
+    ports:
+      - "5432:5432"
+    volumes:
+      - reminders-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U reminders -d reminders"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  reminders-pgdata:

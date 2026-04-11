@@ -3,34 +3,23 @@ package config
 import (
 	"fmt"
 	"os"
+
+	"github.com/joho/godotenv"
 )
 
 type Config struct {
 	Env         string
 	DatabaseURL string
 	HTTPAddr    string
-
-	AnthropicAPIKey string
-
-	TwilioAccountSID string
-	TwilioAuthToken  string
-	TwilioFromNumber string
-
-	PostmarkServerToken string
-	PostmarkFromEmail   string
 }
 
 func Load() (*Config, error) {
+	_ = godotenv.Load()
+
 	cfg := &Config{
-		Env:                 getEnv("ENV", "development"),
-		DatabaseURL:         os.Getenv("DATABASE_URL"),
-		HTTPAddr:            getEnv("HTTP_ADDR", ":8080"),
-		AnthropicAPIKey:     os.Getenv("ANTHROPIC_API_KEY"),
-		TwilioAccountSID:    os.Getenv("TWILIO_ACCOUNT_SID"),
-		TwilioAuthToken:     os.Getenv("TWILIO_AUTH_TOKEN"),
-		TwilioFromNumber:    os.Getenv("TWILIO_FROM_NUMBER"),
-		PostmarkServerToken: os.Getenv("POSTMARK_SERVER_TOKEN"),
-		PostmarkFromEmail:   os.Getenv("POSTMARK_FROM_EMAIL"),
+		Env:         getEnv("ENV", "development"),
+		DatabaseURL: getEnv("DATABASE_URL", ""),
+		HTTPAddr:    getEnv("HTTP_ADDR", ":8080"),
 	}
 
 	if err := cfg.validate(); err != nil {
@@ -41,8 +30,7 @@ func Load() (*Config, error) {
 
 func (c *Config) validate() error {
 	required := map[string]string{
-		// "DATABASE_URL":      c.DatabaseURL,
-		// "ANTHROPIC_API_KEY": c.AnthropicAPIKey,
+		"DATABASE_URL": c.DatabaseURL,
 	}
 	for name, val := range required {
 		if val == "" {
