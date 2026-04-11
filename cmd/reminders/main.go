@@ -16,6 +16,7 @@ import (
 	"github.com/pmollerus23/reminders/internal/config"
 	"github.com/pmollerus23/reminders/internal/db"
 	"github.com/pmollerus23/reminders/internal/httpserver"
+	"github.com/pmollerus23/reminders/internal/scheduler"
 )
 
 func main() {
@@ -53,17 +54,8 @@ func run() error {
 	}
 	logger.Info("migrations applied")
 
-	// --- Smoke test (temporary; remove when scheduler lands in M4) ---
-	smokeCtx, cancelSmoke := context.WithTimeout(ctx, 5*time.Second)
-	if _, err := db.GetDueReminders(smokeCtx, pool, 1); err != nil {
-		cancelSmoke()
-		return fmt.Errorf("db smoke test: %w", err)
-	}
-	cancelSmoke()
-	logger.Info("db smoke test ok")
-
 	// --- HTTP server (existing) ---
-	server := httpserver.New(logger, ":8080")
+	server := httpserver.New(logger, cfg.HTTPAddr)
 
 	g, gCtx := errgroup.WithContext(ctx)
 
@@ -73,6 +65,10 @@ func run() error {
 			return fmt.Errorf("http listen: %w", err)
 		}
 		return nil
+	})
+
+	g.Go(func() error {
+		return scheduler.Run(gCtx, pool, logger)
 	})
 
 	g.Go(func() error {
