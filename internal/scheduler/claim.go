@@ -79,7 +79,6 @@ func claimAndProcess(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logge
 
 func processReminder(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger, r db.Reminder) error {
 	logger.Info("processing reminder", "id", r.ID, "body", r.Body)
-	time.Sleep(20 * time.Second) // TEMP: simulate slow work for crash test
 	_, err := pool.Exec(ctx,
 		`UPDATE reminders SET status = 'sent', locked_until = NULL WHERE id = $1`,
 		r.ID,
