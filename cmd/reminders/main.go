@@ -14,6 +14,7 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/pmollerus23/reminders/internal/config"
+	"github.com/pmollerus23/reminders/internal/db"
 	"github.com/pmollerus23/reminders/internal/httpserver"
 )
 
@@ -39,6 +40,29 @@ func run() error {
 
 	logger.Info("starting reminders", "env", cfg.Env)
 
+	// --- Database ---
+	pool, err := db.Open(ctx, cfg.DatabaseURL)
+	if err != nil {
+		return fmt.Errorf("open db: %w", err)
+	}
+	defer pool.Close()
+	logger.Info("database connected")
+
+	if err := db.Migrate(ctx, pool); err != nil {
+		return fmt.Errorf("migrate: %w", err)
+	}
+	logger.Info("migrations applied")
+
+	// --- Smoke test (temporary; remove when scheduler lands in M4) ---
+	smokeCtx, cancelSmoke := context.WithTimeout(ctx, 5*time.Second)
+	if _, err := db.GetDueReminders(smokeCtx, pool, 1); err != nil {
+		cancelSmoke()
+		return fmt.Errorf("db smoke test: %w", err)
+	}
+	cancelSmoke()
+	logger.Info("db smoke test ok")
+
+	// --- HTTP server (existing) ---
 	server := httpserver.New(logger, ":8080")
 
 	g, gCtx := errgroup.WithContext(ctx)
@@ -61,6 +85,7 @@ func run() error {
 		if err := server.Shutdown(shutdownCtx); err != nil {
 			return fmt.Errorf("http shutdown: %w", err)
 		}
+		logger.Info("http server stopped")
 		return nil
 	})
 

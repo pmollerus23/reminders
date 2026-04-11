@@ -1,0 +1,21 @@
+services:
+  postgres:
+    image: docker.io/library/postgres:17
+    container_name: reminder-postgres
+    environment:
+      POSTGRES_USER: reminders
+      POSTGRES_PASSWORD: reminders_dev_password
+      POSTGRES_DB: reminders
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - reminder-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U reminder -d reminder"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+volumes:
+  reminder-pgdata:
