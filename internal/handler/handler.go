@@ -41,8 +41,8 @@ func New(
 }
 
 const (
-	commandPrefix = "/remind"
-	usage         = "Usage: /remind <your reminder text>"
+	commandPrefix = "/jarvis"
+	usage         = "Usage: /jarvis <your reminder text>"
 )
 
 // Handle processes one inbound update. Non-command messages are ignored

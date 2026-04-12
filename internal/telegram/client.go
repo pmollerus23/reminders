@@ -47,7 +47,7 @@ func New(ctx context.Context, token string, logger *slog.Logger) (*Client, error
 	// Register the /remind command handler. MatchTypeCommand understands
 	// Telegram's convention that commands in group chats may be suffixed
 	// with the bot's username (e.g. /remind@MyBot ...).
-	b.RegisterHandler(bot.HandlerTypeMessageText, "remind", bot.MatchTypeCommand, c.dispatch)
+	b.RegisterHandler(bot.HandlerTypeMessageText, "jarvis", bot.MatchTypeCommand, c.dispatch)
 
 	c.bot = b
 	return c, nil
