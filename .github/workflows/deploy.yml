@@ -69,7 +69,7 @@ jobs:
           mkdir -p ~/.ssh
           echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
-          ssh-keyscan -H ${{ secrets.SSH_HOST }} >> ~/.ssh/known_hosts
+          echo "${{ secrets.SSH_KNOWN_HOST }}" >> ~/.ssh/known_hosts
 
       - name: Upload binary
         run: |
@@ -83,7 +83,13 @@ jobs:
             ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} \
             'set -e
              chmod +x /opt/reminders/reminders.new
+             mv /opt/reminders/reminders /opt/reminders/reminders.old
              mv /opt/reminders/reminders.new /opt/reminders/reminders
              sudo systemctl restart reminders.service
-             sleep 3
+             if ! timeout 15 bash -c "until sudo systemctl is-active --quiet reminders.service; do sleep 1; done"; then
+               echo "Service failed to start, rolling back"
+               mv /opt/reminders/reminders.old /opt/reminders/reminders
+               sudo systemctl restart reminders.service
+               exit 1
+             fi
              sudo systemctl status reminders.service --no-pager'
