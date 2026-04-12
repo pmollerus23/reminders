@@ -17,6 +17,7 @@ import (
 	"github.com/pmollerus23/reminders/internal/db"
 	"github.com/pmollerus23/reminders/internal/handler"
 	"github.com/pmollerus23/reminders/internal/httpserver"
+	"github.com/pmollerus23/reminders/internal/reminder"
 	"github.com/pmollerus23/reminders/internal/scheduler"
 	"github.com/pmollerus23/reminders/internal/telegram"
 )
@@ -63,8 +64,19 @@ func run() error {
 	}
 	logger.Info("telegram client constructed")
 
+	// --- Parser ---
+	var parser reminder.Parser
+	switch cfg.Parser {
+	case config.ParserRegex:
+		parser = reminder.NewRegexParser()
+	case config.ParserClaude:
+		parser = reminder.NewClaudeParser(cfg.AnthropicAPIKey, logger)
+	default:
+		return fmt.Errorf("unknown PARSER: %q", cfg.Parser)
+	}
+
 	// --- Inbound handler ---
-	h := handler.New(pool, tg, logger)
+	h := handler.New(pool, tg, parser, cfg.Location, logger)
 	tg.AttachHandler(h)
 
 	// --- HTTP server (existing) ---
