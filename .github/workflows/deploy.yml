@@ -64,9 +64,10 @@ jobs:
         run: |
           ssh -i ~/.ssh/deploy_key \
             ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} \
-            'set -e
-             chmod +x /opt/reminders/reminders.new
-             mv /opt/reminders/reminders.new /opt/reminders/reminders
-             sudo systemctl restart reminders.service
-             sleep 3
-             sudo systemctl status reminders.service --no-pager'
+            'echo "=== whoami ===" 
+             whoami
+             echo "=== sudo -l ==="
+             sudo -l
+             echo "=== sudo -n test ==="
+             sudo -n systemctl restart reminders.service && echo RESTART_OK
+             echo "=== done ==="'
