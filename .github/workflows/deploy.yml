@@ -86,10 +86,10 @@ jobs:
              mv /opt/reminders/reminders /opt/reminders/reminders.old
              mv /opt/reminders/reminders.new /opt/reminders/reminders
              sudo systemctl restart reminders.service
-             if ! timeout 15 bash -c "until sudo systemctl is-active --quiet reminders.service; do sleep 1; done"; then
+             if ! timeout 15 bash -c "until systemctl is-active --quiet reminders.service; do sleep 1; done"; then
                echo "Service failed to start, rolling back"
                mv /opt/reminders/reminders.old /opt/reminders/reminders
                sudo systemctl restart reminders.service
                exit 1
              fi
-             whoami && sudo systemctl status reminders.service --no-pager'
+             systemctl status reminders.service --no-pager'
