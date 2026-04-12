@@ -92,4 +92,4 @@ jobs:
                sudo systemctl restart reminders.service
                exit 1
              fi
-             whoami && sudo systemctl status reminders.service --no-pager
+             whoami && sudo systemctl status reminders.service --no-pager'
