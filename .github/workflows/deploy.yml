@@ -23,8 +23,8 @@ jobs:
       - name: Vet
         run: go vet ./...
 
-  deploy:
-    name: Deploy
+  build:
+    name: Build
     needs: test
     runs-on: ubuntu-latest
     steps:
@@ -47,6 +47,23 @@ jobs:
             -o reminders \
             ./cmd/reminders
 
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: reminders
+          path: reminders
+          retention-days: 1
+
+  deploy:
+    name: Deploy
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download binary
+        uses: actions/download-artifact@v4
+        with:
+          name: reminders
+
       - name: Configure SSH
         run: |
           mkdir -p ~/.ssh
@@ -64,14 +81,9 @@ jobs:
         run: |
           ssh -i ~/.ssh/deploy_key \
             ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} \
-            'set -ex
-             echo "=== before chmod ==="
-             ls -la /opt/reminders/
+            'set -e
              chmod +x /opt/reminders/reminders.new
-             echo "=== after chmod ==="
              mv /opt/reminders/reminders.new /opt/reminders/reminders
-             echo "=== after mv ==="
-             ls -la /opt/reminders/
-             echo "=== about to sudo ==="
-             sudo -n systemctl restart reminders.service
-             echo "=== sudo succeeded ==="'
+             sudo systemctl restart reminders.service
+             sleep 3
+             sudo systemctl status reminders.service --no-pager'
