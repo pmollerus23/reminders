@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"sync"
 
 	"github.com/go-telegram/bot"
 	"github.com/go-telegram/bot/models"
@@ -14,43 +13,55 @@ type Client struct {
 	bot    *bot.Bot
 	logger *slog.Logger
 
-	// handler is set after construction via AttachHandler, before Start.
-	// Guarded by mu because the library's dispatch goroutine reads it
-	// concurrently with AttachHandler — though in practice AttachHandler
-	// is always called before Start, so contention is zero. The mutex
-	// is belt-and-suspenders for correctness, not performance.
-	mu      sync.RWMutex
+	// handler is set exactly once via AttachHandler, before Start is called.
+	// No mutex: the Go memory model guarantees that writes happening-before
+	// a `go` statement are visible to the started goroutine. Since main.go
+	// calls AttachHandler before the errgroup goroutine invokes Start, the
+	// library's dispatch goroutines observe the write without synchronization.
+	// Do NOT mutate handler after Start.
 	handler Handler
 }
 
-// New constructs a Client and registers an internal default handler
-// that dispatches to whatever Handler is attached via AttachHandler.
+// New constructs a Client. It registers a specific handler for /remind
+// messages via the library's built-in command router, and restricts the
+// update stream to plain messages — edits, callbacks, polls, etc. are
+// filtered server-side so we never see them.
 func New(ctx context.Context, token string, logger *slog.Logger) (*Client, error) {
 	c := &Client{logger: logger}
 
 	opts := []bot.Option{
-		bot.WithDefaultHandler(c.dispatch),
+		bot.WithAllowedUpdates(bot.AllowedUpdates{"message"}),
+		bot.WithDefaultHandler(func(ctx context.Context, _ *bot.Bot, u *models.Update) {
+			c.logger.Debug("telegram: ignored update", "update_id", u.ID)
+		}),
+		bot.WithErrorsHandler(func(err error) {
+			c.logger.Error("telegram library error", "err", err)
+		}),
 	}
 
 	b, err := bot.New(token, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("telegram: new bot: %w", err)
 	}
+
+	// Register the /remind command handler. MatchTypeCommand understands
+	// Telegram's convention that commands in group chats may be suffixed
+	// with the bot's username (e.g. /remind@MyBot ...).
+	b.RegisterHandler(bot.HandlerTypeMessageText, "remind", bot.MatchTypeCommand, c.dispatch)
+
 	c.bot = b
 	return c, nil
 }
 
-// AttachHandler sets the handler that will receive inbound updates.
-// Must be called before Start. Calling it twice replaces the handler.
+// AttachHandler sets the Handler that /remind messages will be dispatched to.
+// Must be called before Start. Calling it twice is a programming error
+// (the second call overwrites the first with no synchronization guarantees
+// once Start is running).
 func (c *Client) AttachHandler(h Handler) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
 	c.handler = h
 }
 
 // Start runs the library's long-poll loop. Blocks until ctx is cancelled.
-// Returns nil on clean shutdown (bot.Start has no return value — it logs
-// and retries on transient errors, exits on ctx cancellation).
 func (c *Client) Start(ctx context.Context) error {
 	c.logger.Info("telegram updater starting")
 	c.bot.Start(ctx)
@@ -58,7 +69,7 @@ func (c *Client) Start(ctx context.Context) error {
 	return nil
 }
 
-// Send — unchanged.
+// Send delivers a plain-text message to the given chat.
 func (c *Client) Send(ctx context.Context, chatID int64, body string) error {
 	_, err := c.bot.SendMessage(ctx, &bot.SendMessageParams{
 		ChatID: chatID,
@@ -70,21 +81,15 @@ func (c *Client) Send(ctx context.Context, chatID int64, body string) error {
 	return nil
 }
 
-// dispatch is the library's HandlerFunc signature. It translates the
-// library's update shape into ours and delegates to the attached Handler.
+// dispatch is invoked by the library only for messages matching /remind.
+// It translates the library's update shape into ours and delegates.
 func (c *Client) dispatch(ctx context.Context, _ *bot.Bot, u *models.Update) {
-	// Filter: we only care about text messages. Edited messages, callbacks,
-	// polls, etc. get dropped silently for now. Expand as needs arise.
-	if u == nil || u.Message == nil || u.Message.Text == "" {
+	if u == nil || u.Message == nil {
 		return
 	}
 
-	c.mu.RLock()
-	h := c.handler
-	c.mu.RUnlock()
-
-	if h == nil {
-		c.logger.Warn("update received but no handler attached", "update_id", u.ID)
+	if c.handler == nil {
+		c.logger.Warn("remind update received but no handler attached", "update_id", u.ID)
 		return
 	}
 
@@ -95,10 +100,7 @@ func (c *Client) dispatch(ctx context.Context, _ *bot.Bot, u *models.Update) {
 		Text:      u.Message.Text,
 	}
 
-	if err := h.Handle(ctx, our); err != nil {
-		// Handler errors aren't fatal — the library swallows panics and
-		// we log-and-move-on for errors. The alternative (killing the
-		// daemon on one bad message) is worse behavior for a bot.
+	if err := c.handler.Handle(ctx, our); err != nil {
 		c.logger.Error("handle update failed",
 			"update_id", our.UpdateID,
 			"chat_id", our.ChatID,

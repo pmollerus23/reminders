@@ -47,13 +47,10 @@ const usage = "Usage: /remind YYYY-MM-DD HH:MM <your reminder text>"
 func (h *Handler) Handle(ctx context.Context, u telegram.Update) error {
 	parsed, err := reminder.ParseCommand(u.Text)
 	switch {
-	case errors.Is(err, reminder.ErrNotACommand):
-		return nil // not ours; silently ignore
 	case errors.Is(err, reminder.ErrBadFormat):
 		return h.reply(ctx, u.ChatID, usage)
 	case err != nil:
-		// Unknown parse error — log and reply generically.
-		h.logger.Error("parse command unexpected error", "err", err)
+		h.logger.Error("parse command unexpected error", "err", err, "text", u.Text)
 		return h.reply(ctx, u.ChatID, "Sorry, something went wrong.")
 	}
 
