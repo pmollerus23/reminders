@@ -1,0 +1,72 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:  # Lets you trigger manually from the Actions UI
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - name: Run tests
+        run: go test ./...
+
+      - name: Vet
+        run: go vet ./...
+
+  deploy:
+    name: Deploy
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - name: Build binary
+        env:
+          CGO_ENABLED: 0
+          GOOS: linux
+          GOARCH: amd64
+        run: |
+          go build \
+            -trimpath \
+            -ldflags="-s -w -X main.version=${{ github.sha }}" \
+            -o reminders \
+            ./cmd/reminders
+
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H ${{ secrets.SSH_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Upload binary
+        run: |
+          scp -i ~/.ssh/deploy_key \
+            reminders \
+            ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:/opt/reminders/reminders.new
+
+      - name: Install binary and restart service
+        run: |
+          ssh -i ~/.ssh/deploy_key \
+            ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} \
+            'set -e
+             chmod +x /opt/reminders/reminders.new
+             mv /opt/reminders/reminders.new /opt/reminders/reminders
+             sudo systemctl restart reminders.service
+             sleep 3
+             sudo systemctl status reminders.service --no-pager'
