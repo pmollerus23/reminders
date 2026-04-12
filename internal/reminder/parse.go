@@ -3,6 +3,7 @@ package reminder
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 )
 
@@ -12,9 +13,39 @@ type ParsedReminder struct {
 	What string
 }
 
-// ErrBadFormat signals the user's input couldn't be understood as a reminder.
-// The handler replies with usage; the system doesn't treat this as an error.
+// ErrBadFormat is the semantic sentinel for "user input couldn't be parsed."
+// Callers rarely match it directly now — they use errors.As(err, &ParseError)
+// to get a user-facing message. It remains in the unwrap chain for any code
+// that wants to ask the broader question.
 var ErrBadFormat = errors.New("bad command format")
+
+// ParseError is returned by Parser implementations when the user's input
+// can't be understood. UserMessage is a human-readable explanation safe
+// to show back to the user; the error chain (via Unwrap) carries
+// ErrBadFormat so errors.Is(err, ErrBadFormat) still succeeds.
+type ParseError struct {
+	UserMessage string
+	cause       error
+}
+
+func (e *ParseError) Error() string {
+	if e.cause != nil {
+		return fmt.Sprintf("parse: %s: %v", e.UserMessage, e.cause)
+	}
+	return fmt.Sprintf("parse: %s", e.UserMessage)
+}
+
+// Unwrap returns ErrBadFormat so errors.Is works at the semantic level.
+// The private `cause` field is surfaced in Error() for logs but deliberately
+// not in the unwrap chain — we don't want callers matching on incidental
+// inner errors like *time.ParseError.
+func (e *ParseError) Unwrap() error {
+	return ErrBadFormat
+}
+
+func newParseError(userMsg string, cause error) *ParseError {
+	return &ParseError{UserMessage: userMsg, cause: cause}
+}
 
 // ParseRequest is the input to any Parser implementation.
 type ParseRequest struct {

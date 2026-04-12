@@ -2,7 +2,6 @@ package reminder
 
 import (
 	"context"
-	"fmt"
 	"strings"
 	"time"
 )
@@ -13,8 +12,6 @@ import (
 type regexParser struct{}
 
 // NewRegexParser returns a Parser backed by strict positional parsing.
-// Returned as the interface type because callers have no reason to
-// depend on the concrete struct.
 func NewRegexParser() Parser {
 	return &regexParser{}
 }
@@ -28,19 +25,28 @@ func (p *regexParser) Parse(_ context.Context, req ParseRequest) (ParsedReminder
 	// intact even if it contains spaces.
 	parts := strings.SplitN(text, " ", 3)
 	if len(parts) < 3 {
-		return ParsedReminder{}, fmt.Errorf("%w: expected 'YYYY-MM-DD HH:MM body'", ErrBadFormat)
+		return ParsedReminder{}, newParseError(
+			"Please use: YYYY-MM-DD HH:MM <reminder text>",
+			nil,
+		)
 	}
 
 	dateStr, timeStr, body := parts[0], parts[1], parts[2]
 
 	when, err := time.ParseInLocation(layout, dateStr+" "+timeStr, req.Loc)
 	if err != nil {
-		return ParsedReminder{}, fmt.Errorf("%w: %v", ErrBadFormat, err)
+		return ParsedReminder{}, newParseError(
+			"I couldn't parse that date and time. Try: 2026-04-13 18:00",
+			err,
+		)
 	}
 
 	body = strings.TrimSpace(body)
 	if body == "" {
-		return ParsedReminder{}, fmt.Errorf("%w: reminder body is empty", ErrBadFormat)
+		return ParsedReminder{}, newParseError(
+			"Your reminder is missing a body.",
+			nil,
+		)
 	}
 
 	return ParsedReminder{When: when, What: body}, nil

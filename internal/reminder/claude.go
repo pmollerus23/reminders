@@ -17,6 +17,9 @@ type claudeParser struct {
 	logger *slog.Logger
 }
 
+// NewClaudeParser returns a Parser backed by the Anthropic API.
+// The client is constructed once and reused — it holds an HTTP client
+// internally and is safe for concurrent use.
 func NewClaudeParser(apiKey string, logger *slog.Logger) Parser {
 	client := anthropic.NewClient(option.WithAPIKey(apiKey))
 	return &claudeParser{client: client, logger: logger}
@@ -30,7 +33,8 @@ User's timezone: %s
 Call the extract_reminder tool exactly once.
 
 - If the text clearly specifies a time and a thing to be reminded of, fill in "when" (RFC3339 with offset, in the user's timezone) and "what" (a concise reminder body, imperative voice, no leading "to ").
-- If the time is ambiguous, in the past, or the text isn't a reminder request, fill in "error" with a short explanation for the user.
+- If the time is ambiguous, in the past, or the text isn't a reminder request, fill in "error" with a short, friendly message addressed directly to the user (e.g., "I couldn't figure out when you mean — try something like 'tomorrow at 6pm'"). Do not apologize or mention yourself.
+- If the time is clear but the body is unintelligible (e.g. "remind me to blorgblop in 3 days"), fill in "error" explaining that the reminder body couldn't be understood (e.g., "I couldn't tell what you want to be reminded of — try something like 'brush my teeth'").
 - Never fill in both a (when, what) pair and an error.`
 
 var toolProperties = map[string]any{
@@ -55,6 +59,7 @@ type toolCallResult struct {
 }
 
 func (p *claudeParser) Parse(ctx context.Context, req ParseRequest) (ParsedReminder, error) {
+	// Bound the call. Handler's ctx may have no deadline.
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
@@ -108,15 +113,21 @@ func (p *claudeParser) Parse(ctx context.Context, req ParseRequest) (ParsedRemin
 
 	if strings.TrimSpace(result.Error) != "" {
 		p.logger.Debug("claude parse declined", "reason", result.Error, "text", req.Text)
-		return ParsedReminder{}, fmt.Errorf("%w: %s", ErrBadFormat, result.Error)
+		return ParsedReminder{}, newParseError(result.Error, nil)
 	}
 
 	when, err := time.Parse(time.RFC3339, result.When)
 	if err != nil {
-		return ParsedReminder{}, fmt.Errorf("%w: invalid time from model: %v", ErrBadFormat, err)
+		return ParsedReminder{}, newParseError(
+			"I understood your request but produced an invalid time. Please try rephrasing.",
+			err,
+		)
 	}
 	if strings.TrimSpace(result.What) == "" {
-		return ParsedReminder{}, fmt.Errorf("%w: empty reminder body from model", ErrBadFormat)
+		return ParsedReminder{}, newParseError(
+			"I couldn't figure out what to remind you about. Please try rephrasing.",
+			nil,
+		)
 	}
 
 	return ParsedReminder{When: when, What: strings.TrimSpace(result.What)}, nil

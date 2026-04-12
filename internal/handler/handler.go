@@ -15,6 +15,9 @@ import (
 	"github.com/pmollerus23/reminders/internal/telegram"
 )
 
+// Messenger is what the handler needs to send replies. Defined here,
+// on the consumer side. The scheduler has its own identical interface —
+// duplicated deliberately so the two consumers stay decoupled.
 type Messenger interface {
 	Send(ctx context.Context, chatID int64, body string) error
 }
@@ -39,16 +42,18 @@ func New(
 
 const (
 	commandPrefix = "/remind"
-	usage         = "Usage: /remind YYYY-MM-DD HH:MM <your reminder text>"
+	usage         = "Usage: /remind <your reminder text>"
 )
 
+// Handle processes one inbound update. Non-command messages are ignored
+// silently. Parse failures reply with a user-facing message from the
+// parser. Infrastructure failures reply with a generic apology.
 func (h *Handler) Handle(ctx context.Context, u telegram.Update) error {
 	text := strings.TrimSpace(u.Text)
 
-	// Not our command — silently ignore. The Telegram library already
-	// filters to /remind via RegisterHandler, but this is defense in
-	// depth: if someone else attaches this handler directly, the prefix
-	// check keeps behavior predictable.
+	// Defense in depth: Telegram's library already routes only /remind
+	// here, but keeping the check makes the handler predictable when
+	// called from tests or other entry points.
 	if !strings.HasPrefix(text, commandPrefix) {
 		return nil
 	}
@@ -64,12 +69,19 @@ func (h *Handler) Handle(ctx context.Context, u telegram.Update) error {
 		Loc:  h.loc,
 	}
 	parsed, err := h.parser.Parse(ctx, req)
-	switch {
-	case errors.Is(err, reminder.ErrBadFormat):
-		return h.reply(ctx, u.ChatID, usage)
-	case err != nil:
-		h.logger.Error("parse unexpected error", "err", err, "text", body)
-		return h.reply(ctx, u.ChatID, "Sorry, something went wrong.")
+	if err != nil {
+		var perr *reminder.ParseError
+		if errors.As(err, &perr) {
+			h.logger.Info("parse rejected",
+				"chat_id", u.ChatID,
+				"text", body,
+				"user_msg", perr.UserMessage,
+				"err", err,
+			)
+			return h.reply(ctx, u.ChatID, perr.UserMessage)
+		}
+		h.logger.Error("parse infrastructure error", "err", err, "text", body)
+		return h.reply(ctx, u.ChatID, "Sorry, something went wrong. Please try again.")
 	}
 
 	r, err := db.CreateReminder(ctx, h.pool, u.ChatID, parsed.What, parsed.When)
