@@ -3,8 +3,16 @@ package config
 import (
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/joho/godotenv"
+)
+
+type ParserKind string
+
+const (
+	ParserRegex  ParserKind = "regex"
+	ParserClaude ParserKind = "claude"
 )
 
 type Config struct {
@@ -12,6 +20,10 @@ type Config struct {
 	DatabaseURL      string
 	HTTPAddr         string
 	TelegramBotToken string
+
+	Parser          ParserKind
+	AnthropicAPIKey string
+	Location        *time.Location
 }
 
 func Load() (*Config, error) {
@@ -22,7 +34,16 @@ func Load() (*Config, error) {
 		DatabaseURL:      getEnv("DATABASE_URL", ""),
 		HTTPAddr:         getEnv("HTTP_ADDR", ":8080"),
 		TelegramBotToken: getEnv("TELEGRAM_BOT_TOKEN", ""),
+		Parser:           ParserKind(getEnv("PARSER", "regex")),
+		AnthropicAPIKey:  getEnv("ANTHROPIC_API_KEY", ""),
 	}
+
+	tzName := getEnv("DEFAULT_TIMEZONE", "UTC")
+	loc, err := time.LoadLocation(tzName)
+	if err != nil {
+		return nil, fmt.Errorf("load timezone %q: %w", tzName, err)
+	}
+	cfg.Location = loc
 
 	if err := cfg.validate(); err != nil {
 		return nil, err
@@ -31,15 +52,25 @@ func Load() (*Config, error) {
 }
 
 func (c *Config) validate() error {
-	required := map[string]string{
-		"DATABASE_URL":       c.DatabaseURL,
-		"TELEGRAM_BOT_TOKEN": c.TelegramBotToken,
+	if c.DatabaseURL == "" {
+		return fmt.Errorf("missing required env var: DATABASE_URL")
 	}
-	for name, val := range required {
-		if val == "" {
-			return fmt.Errorf("missing required env var: %s", name)
+	if c.TelegramBotToken == "" {
+		return fmt.Errorf("missing required env var: TELEGRAM_BOT_TOKEN")
+	}
+
+	switch c.Parser {
+	case ParserRegex:
+		// nothing extra required
+	case ParserClaude:
+		if c.AnthropicAPIKey == "" {
+			return fmt.Errorf("PARSER=claude requires ANTHROPIC_API_KEY")
 		}
+	default:
+		return fmt.Errorf("invalid PARSER %q (want %q or %q)",
+			c.Parser, ParserRegex, ParserClaude)
 	}
+
 	return nil
 }
 
