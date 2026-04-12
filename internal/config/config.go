@@ -8,18 +8,20 @@ import (
 )
 
 type Config struct {
-	Env         string
-	DatabaseURL string
-	HTTPAddr    string
+	Env              string
+	DatabaseURL      string
+	HTTPAddr         string
+	TelegramBotToken string
 }
 
 func Load() (*Config, error) {
 	_ = godotenv.Load()
 
 	cfg := &Config{
-		Env:         getEnv("ENV", "development"),
-		DatabaseURL: getEnv("DATABASE_URL", ""),
-		HTTPAddr:    getEnv("HTTP_ADDR", ":8080"),
+		Env:              getEnv("ENV", "development"),
+		DatabaseURL:      getEnv("DATABASE_URL", ""),
+		HTTPAddr:         getEnv("HTTP_ADDR", ":8080"),
+		TelegramBotToken: getEnv("TELEGRAM_BOT_TOKEN", ""),
 	}
 
 	if err := cfg.validate(); err != nil {
@@ -30,7 +32,8 @@ func Load() (*Config, error) {
 
 func (c *Config) validate() error {
 	required := map[string]string{
-		"DATABASE_URL": c.DatabaseURL,
+		"DATABASE_URL":       c.DatabaseURL,
+		"TELEGRAM_BOT_TOKEN": c.TelegramBotToken,
 	}
 	for name, val := range required {
 		if val == "" {

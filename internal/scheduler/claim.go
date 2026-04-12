@@ -34,7 +34,7 @@ WHERE id IN (
 RETURNING id, telegram_chat_id, body, scheduled_at;
 `
 
-func claimAndProcess(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger) error {
+func claimAndProcess(ctx context.Context, pool *pgxpool.Pool, msgr Messenger, logger *slog.Logger) error {
 	tx, err := pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return fmt.Errorf("begin tx: %w", err)
@@ -70,15 +70,29 @@ func claimAndProcess(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logge
 
 	logger.Info("claimed reminders", "count", len(claimed))
 	for _, r := range claimed {
-		if err := processReminder(ctx, pool, logger, r); err != nil {
+		if err := processReminder(ctx, pool, msgr, logger, r); err != nil {
 			logger.Error("process reminder failed", "id", r.ID, "err", err)
 		}
 	}
 	return nil
 }
 
-func processReminder(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger, r db.Reminder) error {
+func processReminder(ctx context.Context, pool *pgxpool.Pool, msgr Messenger, logger *slog.Logger, r db.Reminder) error {
 	logger.Info("processing reminder", "id", r.ID, "body", r.Body)
+
+	if err := msgr.Send(ctx, r.TelegramChatID, r.Body); err != nil {
+		// Mark failed so we don't spin on a permanently broken reminder.
+		// Later you'll want smarter classification (transient vs permanent).
+		_, updErr := pool.Exec(ctx,
+			`UPDATE reminders SET status = 'failed', locked_until = NULL WHERE id = $1`,
+			r.ID,
+		)
+		if updErr != nil {
+			return fmt.Errorf("send failed and mark-failed failed: send=%w mark=%v", err, updErr)
+		}
+		return fmt.Errorf("send: %w", err)
+	}
+
 	_, err := pool.Exec(ctx,
 		`UPDATE reminders SET status = 'sent', locked_until = NULL WHERE id = $1`,
 		r.ID,
