@@ -15,6 +15,7 @@ import (
 
 	"github.com/pmollerus23/reminders/internal/config"
 	"github.com/pmollerus23/reminders/internal/db"
+	"github.com/pmollerus23/reminders/internal/handler"
 	"github.com/pmollerus23/reminders/internal/httpserver"
 	"github.com/pmollerus23/reminders/internal/scheduler"
 	"github.com/pmollerus23/reminders/internal/telegram"
@@ -55,12 +56,16 @@ func run() error {
 	}
 	logger.Info("migrations applied")
 
-	// --- Telegram ---
-	tgClient, err := telegram.New(ctx, cfg.TelegramBotToken)
+	// --- Telegram client ---
+	tg, err := telegram.New(ctx, cfg.TelegramBotToken, logger)
 	if err != nil {
-		return fmt.Errorf("init telegram: %w", err)
+		return fmt.Errorf("telegram: %w", err)
 	}
-	logger.Info("telegram client ready")
+	logger.Info("telegram client constructed")
+
+	// --- Inbound handler ---
+	h := handler.New(pool, tg, logger)
+	tg.AttachHandler(h)
 
 	// --- HTTP server (existing) ---
 	server := httpserver.New(logger, cfg.HTTPAddr)
@@ -76,7 +81,11 @@ func run() error {
 	})
 
 	g.Go(func() error {
-		return scheduler.Run(gCtx, pool, tgClient, logger)
+		return scheduler.Run(gCtx, pool, tg, logger)
+	})
+
+	g.Go(func() error {
+		return tg.Start(gCtx)
 	})
 
 	g.Go(func() error {
