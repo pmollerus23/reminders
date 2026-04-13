@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/joho/godotenv"
@@ -24,6 +25,10 @@ type Config struct {
 	Parser          ParserKind
 	AnthropicAPIKey string
 	Location        *time.Location
+
+	// Memory layer
+	VerbatimTurns     int           // CHAT_VERBATIM_TURNS: recent turns kept verbatim; older ones are summarized
+	SummarizeInterval time.Duration // SUMMARIZE_INTERVAL: how often the summarize loop runs
 }
 
 func Load() (*Config, error) {
@@ -44,6 +49,18 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("load timezone %q: %w", tzName, err)
 	}
 	cfg.Location = loc
+
+	verbatimTurns, err := parseInt(getEnv("CHAT_VERBATIM_TURNS", "20"))
+	if err != nil {
+		return nil, fmt.Errorf("CHAT_VERBATIM_TURNS: %w", err)
+	}
+	cfg.VerbatimTurns = verbatimTurns
+
+	summarizeInterval, err := time.ParseDuration(getEnv("SUMMARIZE_INTERVAL", "5m"))
+	if err != nil {
+		return nil, fmt.Errorf("SUMMARIZE_INTERVAL: %w", err)
+	}
+	cfg.SummarizeInterval = summarizeInterval
 
 	if err := cfg.validate(); err != nil {
 		return nil, err
@@ -71,6 +88,13 @@ func (c *Config) validate() error {
 			c.Parser, ParserRegex, ParserClaude)
 	}
 
+	if c.VerbatimTurns <= 0 {
+		return fmt.Errorf("CHAT_VERBATIM_TURNS must be > 0, got %d", c.VerbatimTurns)
+	}
+	if c.SummarizeInterval < time.Minute {
+		return fmt.Errorf("SUMMARIZE_INTERVAL must be >= 1m to avoid hammering the API, got %s", c.SummarizeInterval)
+	}
+
 	return nil
 }
 
@@ -79,4 +103,12 @@ func getEnv(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+func parseInt(s string) (int, error) {
+	n, err := strconv.Atoi(s)
+	if err != nil {
+		return 0, fmt.Errorf("parse int %q: %w", s, err)
+	}
+	return n, nil
 }

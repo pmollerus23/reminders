@@ -13,10 +13,15 @@ import (
 
 	"golang.org/x/sync/errgroup"
 
+	"github.com/pmollerus23/reminders/internal/chat"
 	"github.com/pmollerus23/reminders/internal/config"
 	"github.com/pmollerus23/reminders/internal/db"
+	"github.com/pmollerus23/reminders/internal/fact"
 	"github.com/pmollerus23/reminders/internal/handler"
 	"github.com/pmollerus23/reminders/internal/httpserver"
+	"github.com/pmollerus23/reminders/internal/memory"
+	"github.com/pmollerus23/reminders/internal/memory/summarize"
+	"github.com/pmollerus23/reminders/internal/promptctx"
 	"github.com/pmollerus23/reminders/internal/reminder"
 	"github.com/pmollerus23/reminders/internal/scheduler"
 	"github.com/pmollerus23/reminders/internal/telegram"
@@ -57,6 +62,14 @@ func run() error {
 	}
 	logger.Info("migrations applied")
 
+	// --- Memory store ---
+	memStore := memory.NewPostgresStore(pool)
+	logger.Info("memory store constructed")
+
+	// --- Prompt context builder ---
+	const baseSystemPrompt = "You are a helpful reminder assistant. Help the user set and manage reminders."
+	chatBuilder := promptctx.New(memStore, baseSystemPrompt, cfg.VerbatimTurns)
+
 	// --- Telegram client ---
 	tg, err := telegram.New(ctx, cfg.TelegramBotToken, logger)
 	if err != nil {
@@ -64,22 +77,37 @@ func run() error {
 	}
 	logger.Info("telegram client constructed")
 
-	// --- Parser ---
-	var parser reminder.Parser
+	// --- Reminder parser ---
+	var reminderParser reminder.Parser
 	switch cfg.Parser {
 	case config.ParserRegex:
-		parser = reminder.NewRegexParser()
+		reminderParser = reminder.NewRegexParser()
 	case config.ParserClaude:
-		parser = reminder.NewClaudeParser(cfg.AnthropicAPIKey, logger)
+		reminderParser = reminder.NewClaudeParser(cfg.AnthropicAPIKey, logger)
 	default:
 		return fmt.Errorf("unknown PARSER: %q", cfg.Parser)
 	}
 
+	// --- Fact parser and chat responder ---
+	// Both /remember and /chat only make sense with LLM parsing; the stubs make
+	// that clear rather than silently succeeding with wrong output. Both share
+	// PARSER to avoid redundant env vars.
+	var factParser fact.Parser
+	var chatResponder chat.Responder
+	switch cfg.Parser {
+	case config.ParserRegex:
+		factParser = fact.NewStubParser()
+		chatResponder = chat.NewStubResponder()
+	case config.ParserClaude:
+		factParser = fact.NewClaudeParser(cfg.AnthropicAPIKey, logger)
+		chatResponder = chat.NewClaudeResponder(cfg.AnthropicAPIKey, logger)
+	}
+
 	// --- Inbound handler ---
-	h := handler.New(pool, tg, parser, cfg.Location, logger)
+	h := handler.New(pool, tg, reminderParser, factParser, memStore, chatBuilder, chatResponder, cfg.Location, logger)
 	tg.AttachHandler(h)
 
-	// --- HTTP server (existing) ---
+	// --- HTTP server ---
 	server := httpserver.New(logger, cfg.HTTPAddr)
 
 	g, gCtx := errgroup.WithContext(ctx)
@@ -99,6 +127,18 @@ func run() error {
 	g.Go(func() error {
 		return tg.Start(gCtx)
 	})
+
+	// --- Summarize loop ---
+	// Only runs when PARSER=claude — no API key means no summarizer.
+	if cfg.Parser == config.ParserClaude {
+		summarizer := summarize.NewClaudeSummarizer(cfg.AnthropicAPIKey, logger)
+		loop := summarize.NewLoop(memStore, summarizer, cfg.VerbatimTurns, cfg.SummarizeInterval, logger)
+		g.Go(func() error {
+			return loop.Run(gCtx)
+		})
+	} else {
+		logger.Info("summarize loop disabled (PARSER != claude)")
+	}
 
 	g.Go(func() error {
 		<-gCtx.Done()
