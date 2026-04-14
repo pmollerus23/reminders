@@ -128,8 +128,8 @@ func (p *claudeParser) Parse(ctx context.Context, req ParseRequest) (ParsedFact,
 	kind := memory.Kind(result.Kind)
 
 	// Validate that the content JSON matches the declared kind's shape.
-	// We enforce the vocabulary at the write boundary — not just at read time.
-	if err := validateContent(kind, result.Content); err != nil {
+	// ValidateContent is defined in validate.go and shared with intent/claude.go.
+	if err := ValidateContent(kind, result.Content); err != nil {
 		p.logger.Debug("fact content shape mismatch", "kind", kind, "err", err)
 		return ParsedFact{}, newParseError(
 			"I couldn't understand that, try rephrasing.",
@@ -138,58 +138,4 @@ func (p *claudeParser) Parse(ctx context.Context, req ParseRequest) (ParsedFact,
 	}
 
 	return ParsedFact{Kind: kind, Content: result.Content}, nil
-}
-
-// validateContent checks that content decodes correctly into the schema
-// declared for kind. This prevents malformed facts from reaching the store.
-func validateContent(kind memory.Kind, content json.RawMessage) error {
-	switch kind {
-	case memory.KindPreference:
-		var v struct {
-			Topic  string `json:"topic"`
-			Detail string `json:"detail"`
-		}
-		if err := json.Unmarshal(content, &v); err != nil {
-			return fmt.Errorf("unmarshal preference: %w", err)
-		}
-		if v.Topic == "" || v.Detail == "" {
-			return fmt.Errorf("preference: missing topic or detail")
-		}
-	case memory.KindGoal:
-		var v struct {
-			Description string `json:"description"`
-			Cadence     string `json:"cadence"`
-		}
-		if err := json.Unmarshal(content, &v); err != nil {
-			return fmt.Errorf("unmarshal goal: %w", err)
-		}
-		if v.Description == "" {
-			return fmt.Errorf("goal: missing description")
-		}
-	case memory.KindPerson:
-		var v struct {
-			Name     string `json:"name"`
-			Relation string `json:"relation"`
-		}
-		if err := json.Unmarshal(content, &v); err != nil {
-			return fmt.Errorf("unmarshal person: %w", err)
-		}
-		if v.Name == "" {
-			return fmt.Errorf("person: missing name")
-		}
-	case memory.KindRoutine:
-		var v struct {
-			Description string `json:"description"`
-			When        string `json:"when"`
-		}
-		if err := json.Unmarshal(content, &v); err != nil {
-			return fmt.Errorf("unmarshal routine: %w", err)
-		}
-		if v.Description == "" || v.When == "" {
-			return fmt.Errorf("routine: missing description or when")
-		}
-	default:
-		return fmt.Errorf("unknown kind %q", kind)
-	}
-	return nil
 }

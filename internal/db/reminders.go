@@ -27,6 +27,7 @@ type Reminder struct {
 	Body           string
 	ScheduledAt    time.Time
 	Status         ReminderStatus
+	Recurrence     *string // nil means one-time; non-nil values: "hourly","daily","weekly","monthly"
 	LockedUntil    *time.Time
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
@@ -37,27 +38,30 @@ var ErrReminderNotFound = errors.New("reminder not found")
 
 // CreateReminder inserts a new pending reminder and returns the full row,
 // including server-assigned fields (id, timestamps, default status).
+// recurrence is optional; pass nil for a one-time reminder.
 func CreateReminder(
 	ctx context.Context,
 	pool *pgxpool.Pool,
 	chatID int64,
 	body string,
 	scheduledAt time.Time,
+	recurrence *string,
 ) (*Reminder, error) {
 	const query = `
-		INSERT INTO reminders (telegram_chat_id, body, scheduled_at)
-		VALUES ($1, $2, $3)
+		INSERT INTO reminders (telegram_chat_id, body, scheduled_at, recurrence)
+		VALUES ($1, $2, $3, $4)
 		RETURNING id, telegram_chat_id, body, scheduled_at,
-		          status, locked_until, created_at, updated_at
+		          status, recurrence, locked_until, created_at, updated_at
 	`
 
 	var r Reminder
-	err := pool.QueryRow(ctx, query, chatID, body, scheduledAt).Scan(
+	err := pool.QueryRow(ctx, query, chatID, body, scheduledAt, recurrence).Scan(
 		&r.ID,
 		&r.TelegramChatID,
 		&r.Body,
 		&r.ScheduledAt,
 		&r.Status,
+		&r.Recurrence,
 		&r.LockedUntil,
 		&r.CreatedAt,
 		&r.UpdatedAt,
@@ -82,7 +86,7 @@ func GetDueReminders(
 ) ([]Reminder, error) {
 	const query = `
 		SELECT id, telegram_chat_id, body, scheduled_at,
-		       status, locked_until, created_at, updated_at
+		       status, recurrence, locked_until, created_at, updated_at
 		FROM reminders
 		WHERE status = 'pending'
 		  AND scheduled_at <= now()
@@ -106,6 +110,7 @@ func GetDueReminders(
 			&r.Body,
 			&r.ScheduledAt,
 			&r.Status,
+			&r.Recurrence,
 			&r.LockedUntil,
 			&r.CreatedAt,
 			&r.UpdatedAt,

@@ -13,16 +13,14 @@ import (
 
 	"golang.org/x/sync/errgroup"
 
-	"github.com/pmollerus23/reminders/internal/chat"
 	"github.com/pmollerus23/reminders/internal/config"
 	"github.com/pmollerus23/reminders/internal/db"
-	"github.com/pmollerus23/reminders/internal/fact"
 	"github.com/pmollerus23/reminders/internal/handler"
 	"github.com/pmollerus23/reminders/internal/httpserver"
+	"github.com/pmollerus23/reminders/internal/intent"
 	"github.com/pmollerus23/reminders/internal/memory"
 	"github.com/pmollerus23/reminders/internal/memory/summarize"
 	"github.com/pmollerus23/reminders/internal/promptctx"
-	"github.com/pmollerus23/reminders/internal/reminder"
 	"github.com/pmollerus23/reminders/internal/scheduler"
 	"github.com/pmollerus23/reminders/internal/telegram"
 )
@@ -67,7 +65,9 @@ func run() error {
 	logger.Info("memory store constructed")
 
 	// --- Prompt context builder ---
-	const baseSystemPrompt = "You are a helpful reminder assistant. Help the user set and manage reminders."
+	// The base system prompt describes all three capabilities so the unified
+	// dispatcher can steer the model toward the right tool.
+	const baseSystemPrompt = "You are a personal assistant. You can set reminders, remember personal facts, and have open-ended conversations."
 	chatBuilder := promptctx.New(memStore, baseSystemPrompt, cfg.VerbatimTurns)
 
 	// --- Telegram client ---
@@ -77,34 +77,23 @@ func run() error {
 	}
 	logger.Info("telegram client constructed")
 
-	// --- Reminder parser ---
-	var reminderParser reminder.Parser
+	// --- Unified dispatcher ---
+	// The dispatcher handles all three intents in one API call. When PARSER=regex
+	// there is no API key, so the stub returns a clear error message instead.
+	var dispatcher intent.Dispatcher
 	switch cfg.Parser {
 	case config.ParserRegex:
-		reminderParser = reminder.NewRegexParser()
+		dispatcher = intent.NewStubDispatcher()
+		logger.Info("using stub dispatcher (PARSER != claude)")
 	case config.ParserClaude:
-		reminderParser = reminder.NewClaudeParser(cfg.AnthropicAPIKey, logger)
+		dispatcher = intent.NewClaudeDispatcher(cfg.AnthropicAPIKey, logger)
+		logger.Info("using Claude dispatcher")
 	default:
 		return fmt.Errorf("unknown PARSER: %q", cfg.Parser)
 	}
 
-	// --- Fact parser and chat responder ---
-	// Both /remember and /chat only make sense with LLM parsing; the stubs make
-	// that clear rather than silently succeeding with wrong output. Both share
-	// PARSER to avoid redundant env vars.
-	var factParser fact.Parser
-	var chatResponder chat.Responder
-	switch cfg.Parser {
-	case config.ParserRegex:
-		factParser = fact.NewStubParser()
-		chatResponder = chat.NewStubResponder()
-	case config.ParserClaude:
-		factParser = fact.NewClaudeParser(cfg.AnthropicAPIKey, logger)
-		chatResponder = chat.NewClaudeResponder(cfg.AnthropicAPIKey, logger)
-	}
-
 	// --- Inbound handler ---
-	h := handler.New(pool, tg, reminderParser, factParser, memStore, chatBuilder, chatResponder, cfg.Location, logger)
+	h := handler.New(pool, tg, dispatcher, memStore, chatBuilder, cfg.Location, logger)
 	tg.AttachHandler(h)
 
 	// --- HTTP server ---

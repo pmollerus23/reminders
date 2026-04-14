@@ -31,7 +31,7 @@ WHERE id IN (
     FOR UPDATE SKIP LOCKED
     LIMIT $2
 )
-RETURNING id, telegram_chat_id, body, scheduled_at;
+RETURNING id, telegram_chat_id, body, scheduled_at, recurrence;
 `
 
 func claimAndProcess(ctx context.Context, pool *pgxpool.Pool, msgr Messenger, logger *slog.Logger) error {
@@ -49,7 +49,7 @@ func claimAndProcess(ctx context.Context, pool *pgxpool.Pool, msgr Messenger, lo
 	var claimed []db.Reminder
 	for rows.Next() {
 		var r db.Reminder
-		if err := rows.Scan(&r.ID, &r.TelegramChatID, &r.Body, &r.ScheduledAt); err != nil {
+		if err := rows.Scan(&r.ID, &r.TelegramChatID, &r.Body, &r.ScheduledAt, &r.Recurrence); err != nil {
 			rows.Close()
 			return fmt.Errorf("scan claimed row: %w", err)
 		}
@@ -78,11 +78,10 @@ func claimAndProcess(ctx context.Context, pool *pgxpool.Pool, msgr Messenger, lo
 }
 
 func processReminder(ctx context.Context, pool *pgxpool.Pool, msgr Messenger, logger *slog.Logger, r db.Reminder) error {
-	logger.Info("processing reminder", "id", r.ID, "body", r.Body)
+	logger.Info("processing reminder", "id", r.ID, "body", r.Body, "recurrence", r.Recurrence)
 
 	if err := msgr.Send(ctx, r.TelegramChatID, r.Body); err != nil {
 		// Mark failed so we don't spin on a permanently broken reminder.
-		// Later you'll want smarter classification (transient vs permanent).
 		_, updErr := pool.Exec(ctx,
 			`UPDATE reminders SET status = 'failed', locked_until = NULL WHERE id = $1`,
 			r.ID,
@@ -93,6 +92,27 @@ func processReminder(ctx context.Context, pool *pgxpool.Pool, msgr Messenger, lo
 		return fmt.Errorf("send: %w", err)
 	}
 
+	// Recurring reminder: advance scheduled_at to the next occurrence and reset
+	// to pending so the scheduler picks it up again. The row is updated in place
+	// to avoid unbounded table growth.
+	if r.Recurrence != nil && *r.Recurrence != "" {
+		next, err := nextOccurrence(r.ScheduledAt, *r.Recurrence)
+		if err != nil {
+			logger.Error("failed to compute next occurrence — marking sent instead",
+				"id", r.ID, "recurrence", *r.Recurrence, "err", err)
+		} else {
+			_, err = pool.Exec(ctx,
+				`UPDATE reminders SET status = 'pending', scheduled_at = $1, locked_until = NULL WHERE id = $2`,
+				next, r.ID,
+			)
+			if err != nil {
+				return fmt.Errorf("reschedule recurring reminder: %w", err)
+			}
+			logger.Info("recurring reminder rescheduled", "id", r.ID, "next", next)
+			return nil
+		}
+	}
+
 	_, err := pool.Exec(ctx,
 		`UPDATE reminders SET status = 'sent', locked_until = NULL WHERE id = $1`,
 		r.ID,
@@ -101,4 +121,26 @@ func processReminder(ctx context.Context, pool *pgxpool.Pool, msgr Messenger, lo
 		return fmt.Errorf("mark sent: %w", err)
 	}
 	return nil
+}
+
+// nextOccurrence returns the next future fire time for a recurring reminder,
+// advancing by one interval from scheduledAt until the result is after now.
+func nextOccurrence(scheduledAt time.Time, recurrence string) (time.Time, error) {
+	now := time.Now()
+	next := scheduledAt
+	for !next.After(now) {
+		switch recurrence {
+		case "hourly":
+			next = next.Add(time.Hour)
+		case "daily":
+			next = next.AddDate(0, 0, 1)
+		case "weekly":
+			next = next.AddDate(0, 0, 7)
+		case "monthly":
+			next = next.AddDate(0, 1, 0)
+		default:
+			return time.Time{}, fmt.Errorf("unknown recurrence %q", recurrence)
+		}
+	}
+	return next, nil
 }

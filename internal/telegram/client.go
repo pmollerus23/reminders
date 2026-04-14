@@ -22,18 +22,19 @@ type Client struct {
 	handler Handler
 }
 
-// New constructs a Client. It registers a specific handler for /remind
-// messages via the library's built-in command router, and restricts the
-// update stream to plain messages — edits, callbacks, polls, etc. are
-// filtered server-side so we never see them.
+// New constructs a Client. All inbound text messages (commands and plain text
+// alike) are routed to the registered Handler via WithDefaultHandler. The
+// handler.Handle method is responsible for ignoring unknown commands and empty
+// messages — no routing is done at the Telegram layer.
 func New(ctx context.Context, token string, logger *slog.Logger) (*Client, error) {
 	c := &Client{logger: logger}
 
 	opts := []bot.Option{
 		bot.WithAllowedUpdates(bot.AllowedUpdates{"message"}),
-		bot.WithDefaultHandler(func(ctx context.Context, _ *bot.Bot, u *models.Update) {
-			c.logger.Debug("telegram: ignored update", "update_id", u.ID)
-		}),
+		// Route every message — commands and plain text — to c.dispatch.
+		// The Handler decides what to act on; the library only translates the
+		// update shape and logs errors.
+		bot.WithDefaultHandler(c.dispatch),
 		bot.WithErrorsHandler(func(err error) {
 			c.logger.Error("telegram library error", "err", err)
 		}),
@@ -44,19 +45,11 @@ func New(ctx context.Context, token string, logger *slog.Logger) (*Client, error
 		return nil, fmt.Errorf("telegram: new bot: %w", err)
 	}
 
-	// Register all command handlers. MatchTypeCommand understands Telegram's
-	// convention that commands in group chats may be suffixed with the bot's
-	// username (e.g. /jarvis@MyBot ...). Add new commands here as they are
-	// introduced — the handler.Handler.Handle switch ignores unknown ones.
-	for _, cmd := range []string{"jarvis", "remember", "chat"} {
-		b.RegisterHandler(bot.HandlerTypeMessageText, cmd, bot.MatchTypeCommand, c.dispatch)
-	}
-
 	c.bot = b
 	return c, nil
 }
 
-// AttachHandler sets the Handler that /remind messages will be dispatched to.
+// AttachHandler sets the Handler that messages will be dispatched to.
 // Must be called before Start. Calling it twice is a programming error
 // (the second call overwrites the first with no synchronization guarantees
 // once Start is running).
@@ -84,15 +77,17 @@ func (c *Client) Send(ctx context.Context, chatID int64, body string) error {
 	return nil
 }
 
-// dispatch is invoked by the library only for messages matching /remind.
-// It translates the library's update shape into ours and delegates.
+// dispatch is invoked by the library for every inbound message update.
+// It translates the library's update shape into ours and delegates to the
+// registered Handler. The Handler is responsible for ignoring irrelevant
+// messages — this method does no routing.
 func (c *Client) dispatch(ctx context.Context, _ *bot.Bot, u *models.Update) {
 	if u == nil || u.Message == nil {
 		return
 	}
 
 	if c.handler == nil {
-		c.logger.Warn("remind update received but no handler attached", "update_id", u.ID)
+		c.logger.Warn("message received but no handler attached", "update_id", u.ID)
 		return
 	}
 
