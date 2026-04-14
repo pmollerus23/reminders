@@ -34,7 +34,7 @@ WHERE id IN (
 RETURNING id, telegram_chat_id, body, scheduled_at, recurrence;
 `
 
-func claimAndProcess(ctx context.Context, pool *pgxpool.Pool, msgr Messenger, logger *slog.Logger) error {
+func claimAndProcess(ctx context.Context, pool *pgxpool.Pool, msgr Messenger, agent ReminderAgent, logger *slog.Logger) error {
 	tx, err := pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return fmt.Errorf("begin tx: %w", err)
@@ -70,17 +70,23 @@ func claimAndProcess(ctx context.Context, pool *pgxpool.Pool, msgr Messenger, lo
 
 	logger.Info("claimed reminders", "count", len(claimed))
 	for _, r := range claimed {
-		if err := processReminder(ctx, pool, msgr, logger, r); err != nil {
+		if err := processReminder(ctx, pool, msgr, agent, logger, r); err != nil {
 			logger.Error("process reminder failed", "id", r.ID, "err", err)
 		}
 	}
 	return nil
 }
 
-func processReminder(ctx context.Context, pool *pgxpool.Pool, msgr Messenger, logger *slog.Logger, r db.Reminder) error {
+func processReminder(ctx context.Context, pool *pgxpool.Pool, msgr Messenger, agent ReminderAgent, logger *slog.Logger, r db.Reminder) error {
 	logger.Info("processing reminder", "id", r.ID, "body", r.Body, "recurrence", r.Recurrence)
 
-	if err := msgr.Send(ctx, r.TelegramChatID, r.Body); err != nil {
+	msg, err := agent.Compose(ctx, r.Body)
+	if err != nil {
+		logger.Warn("reminder agent compose failed, using raw body", "err", err)
+		msg = r.Body
+	}
+
+	if err := msgr.Send(ctx, r.TelegramChatID, msg); err != nil {
 		// Mark failed so we don't spin on a permanently broken reminder.
 		_, updErr := pool.Exec(ctx,
 			`UPDATE reminders SET status = 'failed', locked_until = NULL WHERE id = $1`,
@@ -113,7 +119,7 @@ func processReminder(ctx context.Context, pool *pgxpool.Pool, msgr Messenger, lo
 		}
 	}
 
-	_, err := pool.Exec(ctx,
+	_, err = pool.Exec(ctx,
 		`UPDATE reminders SET status = 'sent', locked_until = NULL WHERE id = $1`,
 		r.ID,
 	)

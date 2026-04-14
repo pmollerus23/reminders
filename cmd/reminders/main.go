@@ -110,8 +110,15 @@ func run() error {
 		return nil
 	})
 
+	var reminderAgent scheduler.ReminderAgent
+	if cfg.Parser == config.ParserClaude {
+		reminderAgent = scheduler.NewClaudeReminderAgent(cfg.AnthropicAPIKey, logger)
+	} else {
+		reminderAgent = scheduler.NewPassthroughAgent()
+	}
+
 	g.Go(func() error {
-		return scheduler.Run(gCtx, pool, tg, logger)
+		return scheduler.Run(gCtx, pool, tg, reminderAgent, logger)
 	})
 
 	g.Go(func() error {
