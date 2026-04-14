@@ -29,6 +29,9 @@ type Config struct {
 	// Memory layer
 	VerbatimTurns     int           // CHAT_VERBATIM_TURNS: recent turns kept verbatim; older ones are summarized
 	SummarizeInterval time.Duration // SUMMARIZE_INTERVAL: how often the summarize loop runs
+
+	// Proactive messaging
+	ProactiveInterval time.Duration // PROACTIVE_INTERVAL: min gap between proactive messages per user
 }
 
 func Load() (*Config, error) {
@@ -62,6 +65,12 @@ func Load() (*Config, error) {
 	}
 	cfg.SummarizeInterval = summarizeInterval
 
+	proactiveInterval, err := time.ParseDuration(getEnv("PROACTIVE_INTERVAL", "24h"))
+	if err != nil {
+		return nil, fmt.Errorf("PROACTIVE_INTERVAL: %w", err)
+	}
+	cfg.ProactiveInterval = proactiveInterval
+
 	if err := cfg.validate(); err != nil {
 		return nil, err
 	}
@@ -93,6 +102,9 @@ func (c *Config) validate() error {
 	}
 	if c.SummarizeInterval < time.Minute {
 		return fmt.Errorf("SUMMARIZE_INTERVAL must be >= 1m to avoid hammering the API, got %s", c.SummarizeInterval)
+	}
+	if c.ProactiveInterval < time.Hour {
+		return fmt.Errorf("PROACTIVE_INTERVAL must be >= 1h to avoid spamming users, got %s", c.ProactiveInterval)
 	}
 
 	return nil

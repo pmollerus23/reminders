@@ -20,6 +20,7 @@ import (
 	"github.com/pmollerus23/reminders/internal/intent"
 	"github.com/pmollerus23/reminders/internal/memory"
 	"github.com/pmollerus23/reminders/internal/memory/summarize"
+	"github.com/pmollerus23/reminders/internal/proactive"
 	"github.com/pmollerus23/reminders/internal/promptctx"
 	"github.com/pmollerus23/reminders/internal/scheduler"
 	"github.com/pmollerus23/reminders/internal/telegram"
@@ -117,16 +118,22 @@ func run() error {
 		return tg.Start(gCtx)
 	})
 
-	// --- Summarize loop ---
-	// Only runs when PARSER=claude — no API key means no summarizer.
+	// --- Summarize loop + proactive loop ---
+	// Both require the Anthropic API; only run when PARSER=claude.
 	if cfg.Parser == config.ParserClaude {
 		summarizer := summarize.NewClaudeSummarizer(cfg.AnthropicAPIKey, logger)
-		loop := summarize.NewLoop(memStore, summarizer, cfg.VerbatimTurns, cfg.SummarizeInterval, logger)
+		sumLoop := summarize.NewLoop(memStore, summarizer, cfg.VerbatimTurns, cfg.SummarizeInterval, logger)
 		g.Go(func() error {
-			return loop.Run(gCtx)
+			return sumLoop.Run(gCtx)
+		})
+
+		proAgent := proactive.NewClaudeAgent(cfg.AnthropicAPIKey, logger)
+		proLoop := proactive.NewLoop(pool, memStore, tg, proAgent, cfg.ProactiveInterval, cfg.Location, logger)
+		g.Go(func() error {
+			return proLoop.Run(gCtx)
 		})
 	} else {
-		logger.Info("summarize loop disabled (PARSER != claude)")
+		logger.Info("summarize and proactive loops disabled (PARSER != claude)")
 	}
 
 	g.Go(func() error {
