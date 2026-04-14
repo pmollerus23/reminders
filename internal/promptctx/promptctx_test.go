@@ -58,6 +58,9 @@ func (f *fakeStore) FactsByKind(_ context.Context, _ int64, _ memory.Kind) ([]me
 func (f *fakeStore) DeleteFact(_ context.Context, _ int64, _ uuid.UUID) error {
 	panic("fakeStore: DeleteFact not implemented")
 }
+func (f *fakeStore) UpdateFact(_ context.Context, _ int64, _ uuid.UUID, _ memory.Kind, _ json.RawMessage) error {
+	panic("fakeStore: UpdateFact not implemented")
+}
 func (f *fakeStore) ChatsNeedingSummary(_ context.Context, _ int) ([]int64, error) {
 	panic("fakeStore: ChatsNeedingSummary not implemented")
 }

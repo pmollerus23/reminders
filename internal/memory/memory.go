@@ -78,6 +78,8 @@ type Store interface {
 	Facts(ctx context.Context, chatID int64) ([]Fact, error)
 	FactsByKind(ctx context.Context, chatID int64, kind Kind) ([]Fact, error)
 	DeleteFact(ctx context.Context, chatID int64, id uuid.UUID) error
+	// UpdateFact replaces the kind and content of an existing fact.
+	UpdateFact(ctx context.Context, chatID int64, id uuid.UUID, kind Kind, content json.RawMessage) error
 
 	// ChatsNeedingSummary returns chat IDs with more than verbatimWindow turns.
 	// Used by the summarize loop to find work to do.

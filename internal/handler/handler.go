@@ -2,12 +2,14 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/pmollerus23/reminders/internal/db"
@@ -92,12 +94,137 @@ func (h *Handler) handleUnified(ctx context.Context, u telegram.Update, text str
 		return fmt.Errorf("handler: build prompt: %w", err)
 	}
 
-	action, err := h.dispatcher.Dispatch(ctx, p, time.Now().In(h.loc), h.loc)
+	// Build the ToolSet: closures that capture chatID and handler state.
+	// Results are returned to the agentic loop as tool_result content so the
+	// model can incorporate them into its final reply.
+	tools := intent.ToolSet{
+		// ── Reminder write ───────────────────────────────────────────────────
+
+		SetReminder: func(ctx context.Context, what string, when time.Time, recurrence *string) (string, error) {
+			r, err := db.CreateReminder(ctx, h.pool, u.ChatID, what, when, recurrence)
+			if err != nil {
+				return "", fmt.Errorf("create reminder: %w", err)
+			}
+			h.logger.Info("reminder created", "id", r.ID, "chat_id", u.ChatID, "when", r.ScheduledAt, "recurrence", r.Recurrence)
+			msg := fmt.Sprintf("Reminder set for %s", r.ScheduledAt.In(h.loc).Format("2006-01-02 15:04 MST"))
+			if r.Recurrence != nil {
+				msg += fmt.Sprintf(", then %s", *r.Recurrence)
+			}
+			return msg, nil
+		},
+
+		UpdateReminder: func(ctx context.Context, id string, what string, when time.Time, recurrence *string) (string, error) {
+			uid, err := parseUUID(id)
+			if err != nil {
+				return "", err
+			}
+			if err := db.UpdateReminder(ctx, h.pool, u.ChatID, uid, what, when, recurrence); err != nil {
+				return "", fmt.Errorf("update reminder: %w", err)
+			}
+			h.logger.Info("reminder updated", "id", id, "chat_id", u.ChatID, "when", when)
+			msg := fmt.Sprintf("Reminder updated to %s", when.In(h.loc).Format("2006-01-02 15:04 MST"))
+			if recurrence != nil {
+				msg += fmt.Sprintf(", then %s", *recurrence)
+			}
+			return msg, nil
+		},
+
+		DeleteReminder: func(ctx context.Context, id string) (string, error) {
+			uid, err := parseUUID(id)
+			if err != nil {
+				return "", err
+			}
+			if err := db.DeleteReminder(ctx, h.pool, u.ChatID, uid); err != nil {
+				return "", fmt.Errorf("delete reminder: %w", err)
+			}
+			h.logger.Info("reminder deleted", "id", id, "chat_id", u.ChatID)
+			return "Reminder deleted.", nil
+		},
+
+		// ── Reminder read ────────────────────────────────────────────────────
+
+		ListReminders: func(ctx context.Context) ([]intent.ReminderSummary, error) {
+			reminders, err := db.GetPendingReminders(ctx, h.pool, u.ChatID)
+			if err != nil {
+				return nil, fmt.Errorf("list reminders: %w", err)
+			}
+			out := make([]intent.ReminderSummary, len(reminders))
+			for i, r := range reminders {
+				out[i] = intent.ReminderSummary{
+					ID:   r.ID.String(),
+					What: r.Body,
+					When: r.ScheduledAt.In(h.loc).Format(time.RFC3339),
+				}
+				if r.Recurrence != nil {
+					out[i].Recurrence = *r.Recurrence
+				}
+			}
+			return out, nil
+		},
+
+		// ── Fact write ───────────────────────────────────────────────────────
+
+		RememberFact: func(ctx context.Context, kind memory.Kind, content json.RawMessage) (string, error) {
+			if err := h.mem.AddFact(ctx, u.ChatID, memory.Fact{
+				Kind:    kind,
+				Content: content,
+				Source:  memory.SourceUser,
+			}); err != nil {
+				return "", fmt.Errorf("add fact: %w", err)
+			}
+			h.logger.Info("fact stored", "chat_id", u.ChatID, "kind", kind)
+			return "Fact stored.", nil
+		},
+
+		UpdateFact: func(ctx context.Context, id string, kind memory.Kind, content json.RawMessage) (string, error) {
+			uid, err := parseUUID(id)
+			if err != nil {
+				return "", err
+			}
+			if err := h.mem.UpdateFact(ctx, u.ChatID, uid, kind, content); err != nil {
+				return "", fmt.Errorf("update fact: %w", err)
+			}
+			h.logger.Info("fact updated", "id", id, "chat_id", u.ChatID, "kind", kind)
+			return "Fact updated.", nil
+		},
+
+		DeleteFact: func(ctx context.Context, id string) (string, error) {
+			uid, err := parseUUID(id)
+			if err != nil {
+				return "", err
+			}
+			if err := h.mem.DeleteFact(ctx, u.ChatID, uid); err != nil {
+				return "", fmt.Errorf("delete fact: %w", err)
+			}
+			h.logger.Info("fact deleted", "id", id, "chat_id", u.ChatID)
+			return "Fact deleted.", nil
+		},
+
+		// ── Fact read ────────────────────────────────────────────────────────
+
+		ListFacts: func(ctx context.Context) ([]intent.FactSummary, error) {
+			facts, err := h.mem.Facts(ctx, u.ChatID)
+			if err != nil {
+				return nil, fmt.Errorf("list facts: %w", err)
+			}
+			out := make([]intent.FactSummary, len(facts))
+			for i, f := range facts {
+				out[i] = intent.FactSummary{
+					ID:      f.ID.String(),
+					Kind:    string(f.Kind),
+					Content: f.Content,
+				}
+			}
+			return out, nil
+		},
+	}
+
+	reply, err := h.dispatcher.Dispatch(ctx, p, time.Now().In(h.loc), h.loc, tools)
 	if err != nil {
 		var de *intent.DispatchError
 		if errors.As(err, &de) {
-			// User-facing rejection (e.g. stub mode, ambiguous input). Persist
-			// the exchange so the summary reflects the failed attempt.
+			// User-facing rejection (e.g. stub mode). Persist the exchange so
+			// the summary reflects the failed attempt.
 			h.replyAndPersist(ctx, u.ChatID, text, de.UserMessage)
 			return nil
 		}
@@ -106,58 +233,19 @@ func (h *Handler) handleUnified(ctx context.Context, u telegram.Update, text str
 		return fmt.Errorf("handler: dispatch: %w", err)
 	}
 
-	switch action.Kind {
-	case intent.ActionSetReminder:
-		return h.actSetReminder(ctx, u, text, action)
-	case intent.ActionRememberFact:
-		return h.actRememberFact(ctx, u, text, action)
-	case intent.ActionChat:
-		h.replyAndPersist(ctx, u.ChatID, text, action.ChatReply)
-		return nil
-	default:
-		return fmt.Errorf("handler: unknown action kind %q", action.Kind)
-	}
-}
-
-func (h *Handler) actSetReminder(ctx context.Context, u telegram.Update, text string, a intent.Action) error {
-	when, err := time.Parse(time.RFC3339, a.ReminderWhen)
-	if err != nil {
-		// The dispatcher validated this; reaching here indicates a bug.
-		h.logger.Error("set_reminder: invalid RFC3339", "when", a.ReminderWhen, "err", err)
-		return h.reply(ctx, u.ChatID, "Sorry, something went wrong. Please try again.")
-	}
-
-	r, err := db.CreateReminder(ctx, h.pool, u.ChatID, a.ReminderWhat, when, a.ReminderRecurrence)
-	if err != nil {
-		_ = h.reply(ctx, u.ChatID, "Sorry, couldn't save your reminder.")
-		return fmt.Errorf("handler: create reminder: %w", err)
-	}
-
-	h.logger.Info("reminder created", "id", r.ID, "chat_id", u.ChatID, "when", r.ScheduledAt, "recurrence", r.Recurrence)
-	confirm := fmt.Sprintf("Got it — I'll remind you at %s",
-		r.ScheduledAt.In(h.loc).Format("2006-01-02 15:04 MST"))
-	if r.Recurrence != nil {
-		confirm += fmt.Sprintf(", then %s", *r.Recurrence)
-	}
-	h.replyAndPersist(ctx, u.ChatID, text, confirm)
-	return nil
-}
-
-func (h *Handler) actRememberFact(ctx context.Context, u telegram.Update, text string, a intent.Action) error {
-	if err := h.mem.AddFact(ctx, u.ChatID, memory.Fact{
-		Kind:    a.FactKind,
-		Content: a.FactContent,
-		Source:  memory.SourceUser,
-	}); err != nil {
-		_ = h.reply(ctx, u.ChatID, "Sorry, couldn't save that.")
-		return fmt.Errorf("handler: add fact: %w", err)
-	}
-	h.logger.Info("fact stored", "chat_id", u.ChatID, "kind", a.FactKind)
-	h.replyAndPersist(ctx, u.ChatID, text, "Got it — I'll remember that.")
+	h.replyAndPersist(ctx, u.ChatID, text, reply)
 	return nil
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+func parseUUID(s string) (uuid.UUID, error) {
+	id, err := uuid.Parse(s)
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("invalid id %q: %w", s, err)
+	}
+	return id, nil
+}
 
 func (h *Handler) reply(ctx context.Context, chatID int64, body string) error {
 	if err := h.msgr.Send(ctx, chatID, body); err != nil {
@@ -168,8 +256,6 @@ func (h *Handler) reply(ctx context.Context, chatID int64, body string) error {
 
 // replyAndPersist sends a reply then appends both turns to memory. Memory
 // writes are best-effort: errors are logged at Warn and do not propagate.
-// This is deliberately different from CreateReminder / AddFact errors, which
-// are returned — those operations are the product; memory is a side effect.
 func (h *Handler) replyAndPersist(ctx context.Context, chatID int64, userBody, replyText string) {
 	if err := h.msgr.Send(ctx, chatID, replyText); err != nil {
 		h.logger.Error("handler: reply", "chat_id", chatID, "err", err)

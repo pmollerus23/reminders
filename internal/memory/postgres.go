@@ -2,6 +2,7 @@ package memory
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -229,6 +230,26 @@ func (s *postgresStore) DeleteFact(ctx context.Context, chatID int64, id uuid.UU
 	_, err := s.pool.Exec(ctx, deleteFactQuery, chatID, id)
 	if err != nil {
 		return fmt.Errorf("memory: delete fact: %w", err)
+	}
+	return nil
+}
+
+const updateFactQuery = `
+	UPDATE chat_facts
+	SET kind       = $1,
+	    content    = $2,
+	    updated_at = now()
+	WHERE telegram_chat_id = $3
+	  AND id = $4
+`
+
+func (s *postgresStore) UpdateFact(ctx context.Context, chatID int64, id uuid.UUID, kind Kind, content json.RawMessage) error {
+	tag, err := s.pool.Exec(ctx, updateFactQuery, kind, content, chatID, id)
+	if err != nil {
+		return fmt.Errorf("memory: update fact: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("memory: fact not found: %s", id)
 	}
 	return nil
 }

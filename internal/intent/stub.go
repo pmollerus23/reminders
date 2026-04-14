@@ -10,12 +10,11 @@ import (
 type stubDispatcher struct{}
 
 // NewStubDispatcher returns a Dispatcher that always rejects with a clear
-// message. Used when PARSER=regex, since the unified dispatcher requires an
-// LLM. Follows the same stub pattern as fact.NewStubParser.
+// message. Used when PARSER=regex, since the unified dispatcher requires an LLM.
 func NewStubDispatcher() Dispatcher { return &stubDispatcher{} }
 
-func (s *stubDispatcher) Dispatch(_ context.Context, _ promptctx.Prompt, _ time.Time, _ *time.Location) (Action, error) {
-	return Action{}, &DispatchError{
+func (s *stubDispatcher) Dispatch(_ context.Context, _ promptctx.Prompt, _ time.Time, _ *time.Location, _ ToolSet) (string, error) {
+	return "", &DispatchError{
 		UserMessage: "Natural language mode requires PARSER=claude.",
 	}
 }

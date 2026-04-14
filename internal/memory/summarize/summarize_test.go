@@ -4,6 +4,7 @@ package summarize
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"sync"
@@ -108,6 +109,9 @@ func (s *fakeStore) FactsByKind(_ context.Context, _ int64, _ memory.Kind) ([]me
 }
 func (s *fakeStore) DeleteFact(_ context.Context, _ int64, _ uuid.UUID) error {
 	panic("fakeStore: DeleteFact not called by Loop")
+}
+func (s *fakeStore) UpdateFact(_ context.Context, _ int64, _ uuid.UUID, _ memory.Kind, _ json.RawMessage) error {
+	panic("fakeStore: UpdateFact not called by Loop")
 }
 
 // ── Fake summarizer ───────────────────────────────────────────────────────────

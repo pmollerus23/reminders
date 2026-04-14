@@ -2,6 +2,7 @@ package handler_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -73,14 +74,51 @@ func (f *fakeChatBuilder) BuildChatPrompt(_ context.Context, _ int64, _ string) 
 	return f.prompt, f.err
 }
 
-// fakeDispatcher implements intent.Dispatcher for tests.
-type fakeDispatcher struct {
-	action intent.Action
-	err    error
+// fakeToolCall describes a tool invocation the fakeDispatcher will simulate.
+type fakeToolCall struct {
+	// setReminder fields
+	setWhat       string
+	setWhen       time.Time
+	setRecurrence *string
+
+	// rememberFact fields
+	factKind    memory.Kind
+	factContent json.RawMessage
 }
 
-func (f *fakeDispatcher) Dispatch(_ context.Context, _ promptctx.Prompt, _ time.Time, _ *time.Location) (intent.Action, error) {
-	return f.action, f.err
+// fakeDispatcher implements intent.Dispatcher for tests.
+// It simulates the agentic loop: it calls ToolSet callbacks for any configured
+// tool calls, then returns reply (or err).
+type fakeDispatcher struct {
+	// toolCalls are executed (in order) before returning reply.
+	toolCalls []fakeToolCall
+	reply     string
+	err       error
+}
+
+func (f *fakeDispatcher) Dispatch(
+	ctx context.Context,
+	_ promptctx.Prompt,
+	_ time.Time,
+	_ *time.Location,
+	tools intent.ToolSet,
+) (string, error) {
+	if f.err != nil {
+		return "", f.err
+	}
+	for _, tc := range f.toolCalls {
+		if tc.setWhat != "" {
+			if _, err := tools.SetReminder(ctx, tc.setWhat, tc.setWhen, tc.setRecurrence); err != nil {
+				return "", err
+			}
+		}
+		if tc.factKind != "" {
+			if _, err := tools.RememberFact(ctx, tc.factKind, tc.factContent); err != nil {
+				return "", err
+			}
+		}
+	}
+	return f.reply, nil
 }
 
 // discardLogger is a no-op logger used in tests to suppress output.
@@ -118,14 +156,12 @@ func openTestPool(t *testing.T) *pgxpool.Pool {
 	return pool
 }
 
-// ── Unified dispatch tests ─────────────────────────────────────────────────────
+// ── Agentic loop tests ────────────────────────────────────────────────────────
 
 func TestUnified_Chat_Success(t *testing.T) {
 	msgr := &fakeMessenger{}
 	mem := &fakeMemStore{}
-	d := &fakeDispatcher{
-		action: intent.Action{Kind: intent.ActionChat, ChatReply: "Hello there!"},
-	}
+	d := &fakeDispatcher{reply: "Hello there!"}
 
 	h := newHandler(nil, msgr, mem, &fakeChatBuilder{}, d)
 	if err := h.Handle(context.Background(), telegram.Update{ChatID: 99, Text: "hi"}); err != nil {
@@ -149,12 +185,12 @@ func TestUnified_Chat_Success(t *testing.T) {
 func TestUnified_RememberFact_Success(t *testing.T) {
 	msgr := &fakeMessenger{}
 	mem := &fakeMemStore{}
+	factContent := json.RawMessage(`{"topic":"coffee","detail":"black"}`)
 	d := &fakeDispatcher{
-		action: intent.Action{
-			Kind:        intent.ActionRememberFact,
-			FactKind:    memory.KindPreference,
-			FactContent: []byte(`{"topic":"coffee","detail":"black"}`),
+		toolCalls: []fakeToolCall{
+			{factKind: memory.KindPreference, factContent: factContent},
 		},
+		reply: "Got it — I'll remember that.",
 	}
 
 	h := newHandler(nil, msgr, mem, &fakeChatBuilder{}, d)
@@ -185,13 +221,12 @@ func TestUnified_SetReminder_Success(t *testing.T) {
 
 	msgr := &fakeMessenger{}
 	mem := &fakeMemStore{}
-	when := time.Now().Add(24 * time.Hour).UTC().Format(time.RFC3339)
+	when := time.Now().Add(24 * time.Hour).UTC()
 	d := &fakeDispatcher{
-		action: intent.Action{
-			Kind:         intent.ActionSetReminder,
-			ReminderWhen: when,
-			ReminderWhat: "call dentist",
+		toolCalls: []fakeToolCall{
+			{setWhat: "call dentist", setWhen: when},
 		},
+		reply: "I've set a reminder for you to call the dentist tomorrow.",
 	}
 
 	h := newHandler(pool, msgr, mem, &fakeChatBuilder{}, d)
@@ -202,8 +237,45 @@ func TestUnified_SetReminder_Success(t *testing.T) {
 	if len(msgr.sent) != 1 {
 		t.Fatalf("want 1 message, got %d: %v", len(msgr.sent), msgr.sent)
 	}
-	if !errors.Is(nil, nil) { // just a structural check
-		t.Errorf("reminder not persisted")
+	if len(mem.turns) != 2 {
+		t.Fatalf("want 2 turns, got %d", len(mem.turns))
+	}
+}
+
+// TestUnified_MultiTool verifies that the agentic loop can chain multiple tool
+// calls before producing a final reply. This simulates the model calling both
+// remember_fact and set_reminder in a single dispatch cycle.
+func TestUnified_MultiTool_Success(t *testing.T) {
+	pool := openTestPool(t)
+	defer func() {
+		_, _ = pool.Exec(context.Background(),
+			"DELETE FROM reminders WHERE telegram_chat_id = $1", int64(-43))
+	}()
+
+	msgr := &fakeMessenger{}
+	mem := &fakeMemStore{}
+	when := time.Now().Add(24 * time.Hour).UTC()
+	factContent := json.RawMessage(`{"name":"Mom","relation":"mother"}`)
+	d := &fakeDispatcher{
+		toolCalls: []fakeToolCall{
+			// First: store a fact about Mom
+			{factKind: memory.KindPerson, factContent: factContent},
+			// Then: set a reminder
+			{setWhat: "call Mom", setWhen: when},
+		},
+		reply: "I've stored that Mom is your mother and set a reminder to call her tomorrow.",
+	}
+
+	h := newHandler(pool, msgr, mem, &fakeChatBuilder{}, d)
+	if err := h.Handle(context.Background(), telegram.Update{ChatID: -43, Text: "remind me to call Mom tomorrow, she's my mother"}); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+
+	if len(msgr.sent) != 1 {
+		t.Fatalf("want 1 message, got %d: %v", len(msgr.sent), msgr.sent)
+	}
+	if len(mem.facts) != 1 || mem.facts[0].Kind != memory.KindPerson {
+		t.Errorf("facts: %v", mem.facts)
 	}
 	if len(mem.turns) != 2 {
 		t.Fatalf("want 2 turns, got %d", len(mem.turns))
@@ -270,12 +342,12 @@ func TestUnified_InfraError_BuildPrompt(t *testing.T) {
 func TestUnified_InfraError_AddFact(t *testing.T) {
 	msgr := &fakeMessenger{}
 	mem := &fakeMemStore{addFactErr: errors.New("db down")}
+	factContent := json.RawMessage(`{"description":"exercise","cadence":"daily"}`)
 	d := &fakeDispatcher{
-		action: intent.Action{
-			Kind:        intent.ActionRememberFact,
-			FactKind:    memory.KindGoal,
-			FactContent: []byte(`{"description":"exercise","cadence":"daily"}`),
+		toolCalls: []fakeToolCall{
+			{factKind: memory.KindGoal, factContent: factContent},
 		},
+		reply: "Done.",
 	}
 
 	h := newHandler(nil, msgr, mem, &fakeChatBuilder{}, d)
@@ -283,7 +355,7 @@ func TestUnified_InfraError_AddFact(t *testing.T) {
 		t.Fatal("want error returned for AddFact failure, got nil")
 	}
 
-	if len(msgr.sent) != 1 || msgr.sent[0] != "Sorry, couldn't save that." {
+	if len(msgr.sent) != 1 || msgr.sent[0] != "Sorry, something went wrong. Please try again." {
 		t.Errorf("sent: %v", msgr.sent)
 	}
 	if len(mem.turns) != 0 {
@@ -338,9 +410,7 @@ func TestHandle_JarvisEmptyBody(t *testing.T) {
 func TestHandle_JarvisAlias_StripsPrefix(t *testing.T) {
 	msgr := &fakeMessenger{}
 	mem := &fakeMemStore{}
-	d := &fakeDispatcher{
-		action: intent.Action{Kind: intent.ActionChat, ChatReply: "sure!"},
-	}
+	d := &fakeDispatcher{reply: "sure!"}
 
 	h := newHandler(nil, msgr, mem, &fakeChatBuilder{}, d)
 	if err := h.Handle(context.Background(), telegram.Update{ChatID: 99, Text: "/jarvis remind me something"}); err != nil {
